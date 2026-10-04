@@ -1,0 +1,5 @@
+*.go text eol=lf
+*.md text eol=lf
+go.mod text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf

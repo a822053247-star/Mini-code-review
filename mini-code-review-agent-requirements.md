@@ -377,7 +377,7 @@ mini-code-review-agent/
 ├── internal/llm/http.go         # 唯一真实模型适配器
 ├── internal/llm/mock.go         # 确定性响应脚本
 ├── internal/tool/registry.go    # 三个工具与参数校验
-├── internal/model/model.go     # Finding、Report、文件状态
+├── internal/model/review.go     # Finding、Report、文件状态
 ├── internal/report/render.go   # Markdown/JSON
 ├── internal/trace/logger.go    # JSONL 事件
 ├── testdata/                   # patch、Mock 响应与演示样例
