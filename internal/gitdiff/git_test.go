@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -174,4 +175,200 @@ func gitTest(t *testing.T, repo string, args ...string) string {
 		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 	return strings.TrimSpace(string(output))
+}
+
+func TestGetChangesAndReadFixedHead(t *testing.T) {
+	repo := newRepo(t)
+	for name, content := range map[string]string{
+		"space name.go": "package sample\n// old space\n",
+		"deleted.go":    "package sample\n",
+		"old.go":        "package renamed\n",
+		"literal[1].go": "package sample\n// old literal\n",
+		"literal1.go":   "package sample\n// old neighbor\n",
+		"type.go":       "package sample\n",
+	} {
+		writeNamedFile(t, repo, name, content)
+	}
+	base := commitAll(t, repo)
+	writeNamedFile(t, repo, "space name.go", "package sample\n// new space\n")
+	writeNamedFile(t, repo, "literal[1].go", "package sample\n// new literal\n")
+	writeNamedFile(t, repo, "literal1.go", "package sample\n// neighbor must not leak\n")
+	writeNamedFile(t, repo, "added.go", "package added\n")
+	gitTest(t, repo, "rm", "deleted.go")
+	gitTest(t, repo, "mv", "old.go", "renamed.go")
+	gitTest(t, repo, "add", "-A")
+	// Construct special entries in the index without Windows symlink privileges.
+	linkBlob := gitTest(t, repo, "rev-parse", base+":type.go")
+	gitTest(t, repo, "update-index", "--cacheinfo", "120000,"+linkBlob+",type.go")
+	gitTest(t, repo, "update-index", "--add", "--cacheinfo", "160000,"+base+",module")
+	gitTest(t, repo, "commit", "-m", "Add changes and special entries")
+	snapshot, err := Resolve(context.Background(), repo, base, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := GetChanges(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []FileChange{
+		{Path: "added.go", Type: ChangeAdded},
+		{Path: "deleted.go", Type: ChangeDeleted},
+		{Path: "literal1.go", Type: ChangeModified},
+		{Path: "literal[1].go", Type: ChangeModified},
+		{Path: "module", Type: ChangeAdded},
+		{Path: "old.go", Type: ChangeDeleted},
+		{Path: "renamed.go", Type: ChangeAdded},
+		{Path: "space name.go", Type: ChangeModified},
+		{Path: "type.go", Type: ChangeTypeChanged},
+	}
+	if len(changes) != len(want) {
+		t.Fatalf("changes = %+v, want %d entries", changes, len(want))
+	}
+	for i, change := range changes {
+		if change.Path != want[i].Path || change.Type != want[i].Type || change.RawPatch == "" {
+			t.Fatalf("change %d = %+v, want %+v with patch", i, change, want[i])
+		}
+		if change.Path == "literal[1].go" && (strings.Contains(change.RawPatch, "neighbor") || strings.Count(change.RawPatch, "diff --git ") != 1) {
+			t.Fatalf("literal path expanded: %s", change.RawPatch)
+		}
+	}
+	writeNamedFile(t, repo, "added.go", "uncommitted replacement\n")
+	if err := os.Remove(filepath.Join(repo, "space name.go")); err != nil {
+		t.Fatal(err)
+	}
+	// Move HEAD after resolution; neither patches nor file content may drift.
+	commitFile(t, repo, "package sample\n// later commit\n")
+	beforeStatus := gitTest(t, repo, "status", "--porcelain")
+	beforeIndex := gitTest(t, repo, "diff", "--cached")
+	again, err := GetChanges(context.Background(), snapshot)
+	if err != nil || !reflect.DeepEqual(again, changes) {
+		t.Fatalf("fixed changes drifted: %v", err)
+	}
+	for name, wantContent := range map[string]string{
+		"added.go":      "package added\n",
+		"space name.go": "package sample\n// new space\n",
+		"literal[1].go": "package sample\n// new literal\n",
+	} {
+		content, err := ReadHeadFile(context.Background(), snapshot, name)
+		if err != nil || string(content) != wantContent {
+			t.Fatalf("read %q = %q, error %v", name, content, err)
+		}
+	}
+	for _, name := range []string{"type.go", "module"} {
+		if _, err := ReadHeadFile(context.Background(), snapshot, name); err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("special entry %q was accepted: %v", name, err)
+		}
+	}
+	if gitTest(t, repo, "status", "--porcelain") != beforeStatus || gitTest(t, repo, "diff", "--cached") != beforeIndex {
+		t.Fatal("reading changes or head files modified the worktree or index")
+	}
+}
+
+func TestReadHeadFileValidationAndSize(t *testing.T) {
+	repo := newRepo(t)
+	writeNamedFile(t, repo, "dir/file.go", "package sample\n")
+	writeNamedFile(t, repo, "empty.go", "")
+	writeNamedFile(t, repo, "limit.go", strings.Repeat("x", maxHeadFileBytes))
+	writeNamedFile(t, repo, "large.go", strings.Repeat("x", maxHeadFileBytes+1))
+	head := commitAll(t, repo)
+	snapshot, err := Resolve(context.Background(), repo, head, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"", "/file.go", "C:/file.go", "../file.go", "dir/../file.go", "dir\\file.go", "dir//file.go", "./file.go", "file\n.go", "file\x00.go", "missing.go", "dir"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ReadHeadFile(context.Background(), snapshot, name); err == nil {
+				t.Fatalf("invalid path %q was accepted", name)
+			}
+		})
+	}
+	if content, err := ReadHeadFile(context.Background(), snapshot, "limit.go"); err != nil || len(content) != maxHeadFileBytes {
+		t.Fatalf("size boundary: %d bytes, error %v", len(content), err)
+	}
+	if _, err := ReadHeadFile(context.Background(), snapshot, "large.go"); !errors.Is(err, ErrFileTooLarge) {
+		t.Fatalf("oversized file: %v", err)
+	}
+	if content, err := ReadHeadFile(context.Background(), snapshot, "empty.go"); err != nil || len(content) != 0 {
+		t.Fatalf("empty file: %q, error %v", content, err)
+	}
+	if content, err := ReadHeadFile(context.Background(), snapshot, "dir/file.go"); err != nil || string(content) != "package sample\n" {
+		t.Fatalf("nested file: %q, error %v", content, err)
+	}
+	changes, err := GetChanges(context.Background(), snapshot)
+	if err != nil || changes == nil || len(changes) != 0 {
+		t.Fatalf("identical commits: %+v, error %v", changes, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ReadHeadFile(ctx, snapshot, "empty.go"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("read cancellation: %v", err)
+	}
+	if _, err := GetChanges(ctx, snapshot); !errors.Is(err, context.Canceled) {
+		t.Fatalf("changes cancellation: %v", err)
+	}
+}
+
+func TestParseChangedPaths(t *testing.T) {
+	got, err := parseChangedPaths([]byte("M\x00z space.go\x00A\x00a\tname.go\x00"))
+	want := []FileChange{{Path: "a\tname.go", Type: ChangeAdded}, {Path: "z space.go", Type: ChangeModified}}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("NUL parsing = %+v, error %v", got, err)
+	}
+	for _, raw := range []string{"M\x00file.go", "M\x00", "R100\x00old\x00new\x00", "A\x00\x00"} {
+		if _, err := parseChangedPaths([]byte(raw)); err == nil {
+			t.Fatalf("malformed list accepted: %q", raw)
+		}
+	}
+	if _, err := GetChanges(context.Background(), Snapshot{RepoRoot: "repo", BaseSHA: "main", HeadSHA: "HEAD"}); err == nil {
+		t.Fatal("mutable refs were accepted as snapshot object IDs")
+	}
+}
+
+func TestGetChangesDisablesDiffDrivers(t *testing.T) {
+	repo := newRepo(t)
+	writeNamedFile(t, repo, ".gitattributes", "sample.go diff=custom\n")
+	base := commitFile(t, repo, "package sample\n")
+	gitTest(t, repo, "add", ".gitattributes")
+	gitTest(t, repo, "commit", "-m", "Add diff attributes")
+	head := commitFile(t, repo, "package sample\n// changed\n")
+	gitTest(t, repo, "config", "diff.custom.command", "missing-external-diff-command")
+	gitTest(t, repo, "config", "diff.custom.textconv", "missing-textconv-command")
+	gitTest(t, repo, "config", "diff.renames", "true")
+	gitTest(t, repo, "config", "diff.noprefix", "true")
+	gitTest(t, repo, "config", "color.ui", "always")
+	snapshot, err := Resolve(context.Background(), repo, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changes, err := GetChanges(context.Background(), snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range changes {
+		if change.Path == "sample.go" {
+			if !strings.Contains(change.RawPatch, "--- a/sample.go\n+++ b/sample.go") || !strings.Contains(change.RawPatch, "+// changed") || strings.Contains(change.RawPatch, "\x1b") {
+				t.Fatalf("patch was affected by diff configuration: %q", change.RawPatch)
+			}
+			return
+		}
+	}
+	t.Fatal("sample.go patch missing")
+}
+
+func writeNamedFile(t *testing.T, repo, name, content string) {
+	t.Helper()
+	filePath := filepath.Join(repo, filepath.FromSlash(name))
+	if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func commitAll(t *testing.T, repo string) string {
+	t.Helper()
+	gitTest(t, repo, "add", "-A")
+	gitTest(t, repo, "commit", "-m", "Update fixture files")
+	return gitTest(t, repo, "rev-parse", "HEAD")
 }
