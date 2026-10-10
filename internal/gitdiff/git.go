@@ -27,6 +27,9 @@ const (
 // ErrFileTooLarge distinguishes a size limit from a missing or invalid file.
 var ErrFileTooLarge = errors.New("head file exceeds 256 KiB")
 
+// ErrNotRegularFile identifies symlinks, trees, and submodules.
+var ErrNotRegularFile = errors.New("head path is not a regular file")
+
 // GetChanges returns all changed paths, sorted, without review filtering.
 func GetChanges(ctx context.Context, snapshot Snapshot) ([]FileChange, error) {
 	if err := validateSnapshot(snapshot); err != nil {
@@ -117,7 +120,7 @@ func ReadHeadFile(ctx context.Context, snapshot Snapshot, filePath string) ([]by
 		return nil, fmt.Errorf("invalid head tree entry for %q", filePath)
 	}
 	if fields[1] != "blob" || (fields[0] != "100644" && fields[0] != "100755") {
-		return nil, fmt.Errorf("head path %q is not a regular file", filePath)
+		return nil, fmt.Errorf("head path %q is not a regular file: %w", filePath, ErrNotRegularFile)
 	}
 	size, err := strconv.ParseInt(fields[3], 10, 64)
 	if err != nil || size < 0 {

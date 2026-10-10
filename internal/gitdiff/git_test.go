@@ -5,7 +5,6 @@ package gitdiff
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -21,7 +20,7 @@ func TestResolvePinsCommitsFromSubdirectory(t *testing.T) {
 	repo := newRepo(t)
 	base := commitFile(t, repo, "package sample\n")
 	head := commitFile(t, repo, "package sample\n// second version\n")
-	fmt.Printf("base: %s, head: %s\n", base, head)
+	t.Logf("base: %s, head: %s", base, head)
 	subdir := filepath.Join(repo, "sub directory")
 	if err := os.Mkdir(subdir, 0755); err != nil {
 		t.Fatal(err)
@@ -135,9 +134,13 @@ func TestResolveWithoutGit(t *testing.T) {
 // 返回一个保存目录路径的字符串，用于存储 Git 仓库的根目录
 func newRepo(t *testing.T) string {
 	t.Helper()
+	// Keep fixtures independent of the user's Git configuration and templates.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_ATTR_NOSYSTEM", "1")
 	// 假设临时路径是 C:\Temp\Test001
-	repo := t.TempDir()                    //repo == "C:\\Temp\\Test001"
-	gitTest(t, repo, "init", "-b", "main") // 在repo目录下初始化一个 Git 仓库，.git目录下包含HEAD、refs目录、objects目录等文件
+	repo := t.TempDir()                                   //repo == "C:\\Temp\\Test001"
+	gitTest(t, repo, "init", "--template=", "-b", "main") // 在repo目录下初始化一个 Git 仓库，.git目录下包含HEAD、refs目录、objects目录等文件
 	gitTest(t, repo, "config", "user.name", "Mini Review Test")
 	gitTest(t, repo, "config", "user.email", "mini-review@example.com")
 	gitTest(t, repo, "config", "commit.gpgsign", "false")

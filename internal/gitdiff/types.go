@@ -26,6 +26,17 @@ type FileChange struct {
 	Type     ChangeType
 	RawPatch string
 	ParsedPatch
+	HeadContent []byte
+	Reviewable  bool
+	SkipReason  string
+}
+
+// ChangeSet retains excluded files as well as coverage gaps for the Agent.
+type ChangeSet struct {
+	Snapshot       Snapshot
+	Files          []FileChange
+	Warnings       []string
+	HasCoverageGap bool
 }
 
 // LineKind is the prefix identifying a unified patch content line.
