@@ -20,7 +20,7 @@
 
 参考 filereader 的 scanLines 在文件末尾有换行时额外计一行；Mini 不沿用这一口径。Mini 空文件为 0 行，`"a\n"` 为 1 行，`"a\n\n"` 为 2 行，末尾换行不制造额外锚点。CRLF 只去掉行尾 CR，保留正文空格及内部字符。读取和评论的总行数使用同一规则。
 
-现有 gitdiff 的 validateFilePath、staticPathReason、generatedMarker 是包内标识符，tool 不能直接调用。步骤 2～3 需确定一个小型共享校验入口或等价集中实现，避免规则漂移。ReadHeadFile 已检查普通文件和大小，但不检查扩展名、目录、生成标记、NUL 或 UTF-8；这些检查不能因复用读取入口而遗漏。
+步骤 1 阅读时，gitdiff 的 validateFilePath、staticPathReason、generatedMarker 是包内标识符，tool 不能直接调用。步骤 3 已通过 SourcePathReason/SourceContentReason 共享校验，避免规则漂移。ReadHeadFile 只检查普通文件和大小，不检查扩展名、目录、生成标记、NUL 或 UTF-8；工具通过共享函数补齐这些检查。
 
 ## 单文件任务绑定与所有权
 
@@ -233,7 +233,7 @@ execution 另携带程序可见的可选 Completion（当前 path、summary）�
 
 2026-10-10 实际验证：`gofmt -w ./internal/tool` 完成；`go test ./internal/tool`、随后 `go test ./...` 全部 6 包通过，`go build ./...` 通过，`git diff --check` 通过。新 Go 文件均已检查 SPDX 头和 LF。Go 命令设置 GOTOOLCHAIN=local、GOPROXY=off、GOSUMDB=off；没有网络请求，第一天 CLI 和第二天 Git 测试继续通过。没有修改参考代码、用户仓库索引或被审查工作区。
 
-下一步为 plan3 步骤 3：绑定固定 Snapshot 的 file_read，实现路径/文本排除、真实行范围及有界输出；随后再实现 collector、动态评论锚点校验和 task_done 能力。
+步骤 2 完成时的下一步为 plan3 步骤 3：绑定固定 Snapshot 的 file_read，实现路径/文本排除、真实行范围及有界输出；随后再实现 collector、动态评论锚点校验和 task_done 能力。
 
 ## 步骤 3：固定 head 的 file_read 与有界输出
 
@@ -250,3 +250,7 @@ execution 另携带程序可见的可选 Completion（当前 path、summary）�
 测试以小型内存 fixture 验证 120 默认窗口、单端参数、EOF、200/201 行、非法/极大整数端点、16 KiB 恰好/超一字节、UTF-8 长单行、完整行边界、空文件及 CRLF。真实 Git fixture 用局部身份、空模板、关闭 autocrlf/hooks 的临时仓库，验证未变更关联文件、普通空格路径、256 KiB 边界/超限、目录、生成/二进制/非 UTF-8、索引构造链接与子模块。
 
 集成测试经真实注册表执行 file_read。固定 Snapshot 后创建第三次提交移动分支，再留下不同暂存/工作区内容并删除关联文件；返回 main.go 的旧 head 内容及关联文件提交内容。读取前后的 status 与 cached diff 相同。其余两个处理函数仍为测试 spy，不宣称已经完成三个工具闭环。
+
+2026-10-11 实际验证：`go test ./internal/tool` 通过，随后 `go test ./...` 全部 6 包通过（gitdiff 约 25 秒，tool 约 4.5 秒），`go build ./...` 与 `git diff --check` 通过。修改的 Go 源码已经 gofmt，SPDX/LF 检查通过。验证进程设置 GOTOOLCHAIN=local、GOPROXY=off、GOSUMDB=off，没有网络请求。第一天 CLI 和第二天 Git 测试未回归；Git 写操作仅用于临时 fixture，不修改参考项目或用户仓库索引。
+
+下一步为步骤 4：code_comment 的当前文件/新增锚点校验与 collector；总行数应复用 SplitSourceLines，不另造行数口径。

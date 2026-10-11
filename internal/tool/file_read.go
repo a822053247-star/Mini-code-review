@@ -68,6 +68,7 @@ func (reader *FileReader) Execute(ctx context.Context, args FileReadArgs) (Execu
 	if err := ctx.Err(); err != nil {
 		return Execution{}, fmt.Errorf("file_read: %w", err)
 	}
+	// 读取前先检查路径和内容限制，避免不必要的 Git 对象访问。
 	if reason := gitdiff.SourcePathReason(args.Path); reason != "" {
 		code := "file_excluded"
 		if reason == gitdiff.SkipInvalidPath {
@@ -75,6 +76,7 @@ func (reader *FileReader) Execute(ctx context.Context, args FileReadArgs) (Execu
 		}
 		return Failure(code, "source path is not allowed: "+reason), nil
 	}
+	// reader.read 默认是 gitdiff.ReadHeadFile，读取文件内容。
 	content, err := reader.read(ctx, reader.snapshot, args.Path)
 	if contextErr := ctx.Err(); contextErr != nil {
 		return Execution{}, fmt.Errorf("file_read: %w", contextErr)
