@@ -21,8 +21,11 @@ import (
 const (
 	gitTimeout       = 10 * time.Second
 	maxStderrBytes   = 4096
-	maxHeadFileBytes = 256 * 1024
+	maxHeadFileBytes = MaxHeadFileBytes
 )
+
+// MaxHeadFileBytes 是读取固定 head 普通文件时允许的最大字节数。
+const MaxHeadFileBytes = 256 * 1024
 
 // ErrFileTooLarge distinguishes a size limit from a missing or invalid file.
 var ErrFileTooLarge = errors.New("head file exceeds 256 KiB")
@@ -153,6 +156,11 @@ func validateSnapshot(snapshot Snapshot) error {
 		}
 	}
 	return nil
+}
+
+// ValidateSnapshot 检查仓库路径和完整提交 ID 的格式，不重新解析分支。
+func ValidateSnapshot(snapshot Snapshot) error {
+	return validateSnapshot(snapshot)
 }
 
 func validateFilePath(filePath string) error {

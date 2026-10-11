@@ -116,13 +116,7 @@ func Load(ctx context.Context, snapshot Snapshot) (ChangeSet, error) {
 			return ChangeSet{}, fmt.Errorf("load head content %q: %w", change.Path, err)
 		default:
 			change.HeadContent = content
-			if bytes.IndexByte(content, 0) >= 0 {
-				change.SkipReason = SkipBinary
-			} else if !utf8.Valid(content) {
-				change.SkipReason = SkipNonUTF8
-			} else if generatedMarker.Match(content) {
-				change.SkipReason = SkipGenerated
-			}
+			change.SkipReason = SourceContentReason(content)
 		}
 		if change.SkipReason == "" && len(parsed.AddedLines) == 0 {
 			change.SkipReason = SkipNoAddedLines
@@ -136,17 +130,36 @@ func staticPathReason(change FileChange) string {
 	if change.Type == ChangeDeleted {
 		return SkipDeleted
 	}
-	if validateFilePath(change.Path) != nil {
+	return SourcePathReason(change.Path)
+}
+
+// SourcePathReason 共享 Go 源码的路径筛选，不要求文件有 patch 或新增行。
+func SourcePathReason(filePath string) string {
+	if validateFilePath(filePath) != nil {
 		return SkipInvalidPath
 	}
-	if !strings.HasSuffix(change.Path, ".go") {
+	if !strings.HasSuffix(filePath, ".go") {
 		return SkipUnsupported
 	}
-	parts := strings.Split(change.Path, "/")
+	parts := strings.Split(filePath, "/")
 	for _, directory := range parts[:len(parts)-1] {
 		if directory == "vendor" || directory == "testdata" {
 			return SkipDirectory
 		}
+	}
+	return ""
+}
+
+// SourceContentReason 共享文本筛选，保持 Load 与关联文件读取的规则一致。
+func SourceContentReason(content []byte) string {
+	if bytes.IndexByte(content, 0) >= 0 {
+		return SkipBinary
+	}
+	if !utf8.Valid(content) {
+		return SkipNonUTF8
+	}
+	if generatedMarker.Match(content) {
+		return SkipGenerated
 	}
 	return ""
 }
