@@ -1,8 +1,8 @@
-# 第三天设计记录：工具契约初稿
+# 第三天设计记录：工具契约与离线集成
 
-日期：2026-10-10。对应 [plan3.md](../plan3.md) 步骤 1；依据 [需求文档](../mini-code-review-agent-requirements.md) 第 7 节和现有第二天接口。
+起始日期：2026-10-10，更新至 2026-10-12。对应 [plan3.md](../plan3.md) 步骤 1～6；依据 [需求文档](../mini-code-review-agent-requirements.md) 第 7 节和现有第二天接口。
 
-**状态：步骤 1 的契约阅读、步骤 2 的固定注册表/参数解码以及步骤 3 的 file_read 已实现；code_comment/collector、task_done 能力以及 Runner 尚未实现。本文 JSON 示例仍为协议样例，不是真实问题结论。**
+**状态：步骤 1～6 的契约、注册表、三个具体工具与正式离线演示已实现；本节末尾记录本次验证结果。第四天 Mock/Runner、CLI/Agent 工具闭环尚未实现。本文 JSON 示例与演示评论用于协议验证，不是真实问题结论。**
 
 ## 阅读结果与复用范围
 
@@ -254,3 +254,82 @@ execution 另携带程序可见的可选 Completion（当前 path、summary）�
 2026-10-11 实际验证：`go test ./internal/tool` 通过，随后 `go test ./...` 全部 6 包通过（gitdiff 约 25 秒，tool 约 4.5 秒），`go build ./...` 与 `git diff --check` 通过。修改的 Go 源码已经 gofmt，SPDX/LF 检查通过。验证进程设置 GOTOOLCHAIN=local、GOPROXY=off、GOSUMDB=off，没有网络请求。第一天 CLI 和第二天 Git 测试未回归；Git 写操作仅用于临时 fixture，不修改参考项目或用户仓库索引。
 
 下一步为步骤 4：code_comment 的当前文件/新增锚点校验与 collector；总行数应复用 SplitSourceLines，不另造行数口径。
+
+## 步骤 4～5：评论校验、收集与单文件完成声明
+
+2026-10-12 新增 code_comment.go、collector.go、task_done.go 和各自测试。
+
+`NewCommenter(change, collector)` 接收同一个 Load 链路中的 Reviewable FileChange，拒绝不可审查/无锚点任务和 nil collector。通过 SplitSourceLines 计算 head 总行数，复制 AddedLines，独立保存 Path 和总行数；外部修改原始 map、内容或路径不会改变已绑定的评论权限。FileChange 没有 SHA，来源一致性仍由装配方保证。
+
+`Commenter.Execute` 复用 validateCommentArgs 检查字段、枚举及 rune 长度，随后检查精确 Path、head 范围和新增起点，全部合法后才写 collector。EndLine 可以包含后续上下文。直接调用具体处理函数也不能绕过静态校验；缺失/null 等 JSON 协议仍在注册表解码时拒绝。语义真实性不由这些校验保证，description/suggestion 的英文契约沿用原有说明和 Schema。
+
+Collector 使用 slice/map，仅在包内暴露写入口 add，外部只能通过工具校验后提交；零值可用，Findings 返回独立的非 nil 切片。结构化 key 包含 path/start/end 和标题的 Fields 折叠空白、ToLower 结果。重复成功返回 accepted=true/duplicate=true，不覆盖首条内容；位置、文件、标题或标点不同不会被语义合并。不同运行应使用不同实例。
+
+`NewTaskFinisher(path)` 绑定一个允许的 Go 文件路径；装配方应传当前 Reviewable 文件的 Path。执行器不持有 collector 或 Report。Execute 校验并裁剪 summary，生成 TaskDoneData 和独立 Completion；允许零问题，成功/失败都不收集评论。取消和超时以 wrapped Go error 传播，不返回完成声明。
+
+装配后调用链明确为：
+
+```text
+NewRegistry(Handlers{
+    FileRead: reader.Execute,
+    CodeComment: commenter.Execute,
+    TaskDone: finisher.Execute,
+})
+    → Registry.Execute → bind 解码与静态校验 → 对应具体工具 Execute
+```
+
+测试绑定三个真实处理函数（读取单元测试使用内存依赖），共享 collector 为 sample.go/other.go 各创建独立执行器。验证读关联文件不扩大评论范围、完成声明只能指向绑定文件、summary 不转成问题、返回 Completion 被修改后不影响后续绑定。JSON 失败、动态锚点失败及取消都保持此前问题不变。
+
+第四天 Runner 仍须执行并回填同轮全部调用，再判断“合法 task_done 且同轮无工具错误”；工具成功、零条问题或普通文本不能代表文件完成。task_done 不退出进程，也不把整个运行标记 completed。本次没有实现同轮状态机、模型或报告输出。
+
+2026-10-12 实际验证：`gofmt -w ./internal/tool` 完成，`go test ./internal/tool` 通过，`go test ./...` 全部 6 包通过，`go build ./...` 和 `git diff --check` 通过；新增的六个 Go 文件均通过 SPDX/LF 检查。Go 命令设置 GOTOOLCHAIN=local、GOPROXY=off、GOSUMDB=off，无网络请求，第一天 CLI 和第二天 Git 测试继续通过。
+
+步骤 4～5 完成时的下一步为 plan3 步骤 6 的真实临时仓库离线演示与统一验收；当时的工具组合单测不冒充已经执行 Runner 或正式演示测试。
+
+## 步骤 6：真实 Git 离线演示与回归
+
+2026-10-12 新增 `internal/tool/integration_test.go` 的 `TestToolsOfflineDemo`。仅在 `t.TempDir()` 仓库执行 Git 写操作：隔离全局/系统配置与系统 attributes，空模板初始化，局部测试身份，关闭签名、autocrlf 和 hooks。复用 tool 测试包内的最小 Git/文件 fixture 辅助函数，不调用 gitdiff 的未导出 test helper，不增加生产仓库管理器。
+
+fixture 恰好两个提交：sample.go 从减法变成带注释的加法，related.go 保持不变，link.go 使用 Git 索引模式 120000 和已有 blob 构造，不依赖 Windows 链接权限。提交后将 sample.go 暂存为 `package staged`，工作区再次改为 `package unstaged`，并删除工作区 related.go。真实 `Resolve → Load` 仍读取提交对象：只有 sample.go 可审查，link.go 被排除，related.go 不在变更集。
+
+三个真实处理函数绑定同一固定 Snapshot/当前文件/collector。通过注册表读取两个文件并逐行核对 `N|正文`、完整 head SHA、实际范围和总行数。sample.go 的 AddedLines 精确为 `{4, 5}`；示例评论从新增第 5 行开始，到上下文第 6 行结束。首次评论 accepted=true/duplicate=false，重复成功且 duplicate=true，collector 始终只保留首条 Finding。task_done 返回绑定的 sample.go 与检查摘要，产生程序内部 Completion，不改变 collector。
+
+在 collector 为空及已有一条问题时分别插入 unknown_tool、坏 JSON、missing.go 读取失败、link.go 特殊文件、related.go 非当前文件评论以及第 3 行非新增锚点评论。逐项断言失败 code、无 data/Completion、完整 Findings 不变。整个 Resolve/Load/工具调用前后的 status 与 cached diff 完全一致。英文 `t.Logf` 输出工具名、固定 SHA、成功或失败 JSON（含 duplicate）、collector_count 和 completion，最后标明 runner_executed=false；不写报告文件。
+
+### 截断与锚点复盘样例
+
+- 300 行文件只传 path：默认返回 1～120，total_lines=300、truncated=false，因为默认有效窗口就是 120 行。显式请求 1～201：返回 1～200、truncated=true、last_line_truncated=false。
+- 单行正文为 16382 个 ASCII 字符：`1|` 加正文加展示换行超过 16384 字节，返回 16381 个正文字符，总正文恰好 16 KiB，实际范围仍为 1～1，两个截断标记均为 true。多字节字符只截在完整 UTF-8 边界；这些预算与边界由 file_read 单测验证。
+- 本演示的第 5 行是 `return a + b`，第 6 行是 `}`。5～6 可评论，3～6 因起点不在 AddedLines 中失败。关联文件可提供上下文，但读取资格不能扩大当前任务的评论权限。
+- Schema 无法知道当前任务 Path、提交 EOF 或 AddedLines，也不能替代程序对空白、重复 JSON 键和跨字段约束的检查。
+- 重复评论算成功，是因为已经接受了该位置与归一化标题的问题；重试不应增加第二条或覆盖首条。去重仍按结构化键进行，不判断语义相似度。
+- task_done 成功只是单文件完成声明。未来 Runner 必须执行并回填同轮所有调用，结合工具错误与任务状态再判断结束。本演示没有运行同轮恢复、Mock Client 或模型。
+
+取消传播仍遵循本笔记的统一契约：Canceled/DeadlineExceeded 通过 wrapped Go error 返回零结果，普通工具失败返回 JSON；已有注册表、读取、评论和完成声明单测覆盖取消及失败状态隔离。第四天可在这些契约上接入 Mock 和 Runner。
+
+### 实际验证结果（2026-10-12）
+
+使用本项目 Go 1.26.7 windows/amd64；所有 Go 命令均设置 `GOTOOLCHAIN=local`、`GOPROXY=off`、`GOSUMDB=off`，未请求网络或配置 API Key。
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `gofmt -w ./internal/tool` | 完成；未调整 gitdiff 生产入口 |
+| `go test ./...` | 全部 6 包通过；gitdiff 18.065 秒，tool 5.701 秒，其余为缓存结果 |
+| `go build ./...` | 通过 |
+| `go test ./internal/tool -run '^TestToolsOfflineDemo$' -v` | 通过；测试 1.85 秒，英文日志包含全部成功/失败结果、duplicate=true、collector_count=1 和完成声明 |
+| `go test ./internal/gitdiff -run '^TestLoadDisplaysNumberedDiff$' -v` | 通过；测试 1.49 秒，AddedLines 为 [4 5] |
+| `go build -o <临时 exe> ./cmd/mini-review` 后实际运行 | `--help` 为 0、`--format=text` 为 2、`--mock --format=json` 为 1；stdout 均为空，stderr 分别含帮助、参数诊断、未实现提示；临时 exe 已删除 |
+| `git diff --check` 与 tool Go 源码 SPDX/LF 检查 | 通过；新 integration_test.go 含 Apache-2.0 SPDX 头，tool Go 文件全部保持 LF |
+
+演示运行中的完整 head SHA 为 `38f2332df41cef599eb90148fb5e915765a3045a`；fixture SHA 随提交时间变化，这个值仅记录本次执行。Git 写操作仅发生在临时 fixture 仓库，没有修改项目索引或参考项目。测试只输出日志，不生成报告。
+
+第三天交付验收：
+
+- [x] 三个工具有稳定名称、英文说明、JSON Schema 和严格程序校验。
+- [x] 固定 head 读取关联 Go 文件，路径/类型/内容排除一致。
+- [x] 120/200 行、16 KiB 正文、256 KiB 文件上限与截断契约由读取单测及真实 Git fixture 验证。
+- [x] 评论仅限当前文件，起点为 AddedLines，范围符合 head 行数。
+- [x] 文本 rune 长度、枚举、结构化键去重和失败无副作用有测试。
+- [x] task_done 仅提供单文件完成声明，零问题单测通过，不承担 Runner 判断。
+- [x] 离线工具演示、全部测试及构建通过，第一天 CLI 和第二天 diff 演示未回归。
+- [x] README 和设计笔记记录实际成果及第四天 Mock/Runner 接入边界。

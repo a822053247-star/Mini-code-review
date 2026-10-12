@@ -2,13 +2,15 @@
 
 用 Go 编写的个人 Agent 练习项目。需求与开发计划见 [需求文档](mini-code-review-agent-requirements.md)、[plan1.md](plan1.md) 和 [plan2.md](plan2.md)。
 
-## 当前进度：第二天 Git 输入层
+## 当前进度：第三天工具层（步骤 1～6）
 
 已完成独立 Go 模块、审查结果结构、模型客户端与消息契约、CLI 参数解析，以及 `internal/gitdiff` 的固定提交解析、逐文件 patch、head 内容读取、行号映射、筛选和范围限制。
 
 Git 输入层已能在测试中通过 `Resolve → Load` 运行，返回含所有变更文件、审查标记、跳过原因和覆盖警告的 `ChangeSet`。CLI 尚未接入该流程，仍然只解析和校验参数；CLI 的完整审查、工具执行、模型调用、报告和 trace 尚未实现。
 
-第三天已完成 `internal/tool` 的固定注册表、三个工具定义、严格参数解码和统一成功/失败结果，以及可绑定到 `Handlers.FileRead` 的固定版本读取能力。`file_read` 可读取未变更关联 Go 文件，默认 120 行、最多 200 行/16 KiB 带行号正文，返回实际范围和截断标记；与 Load 共享静态筛选规则。真实临时 Git 仓库测试验证分支移动、工作区修改后仍读取固定 head。评论 collector 和完成声明工具尚待后续步骤实现，CLI 尚未接入工具。契约与进度见 [第三天记录](notes/day3-design.md)，后续任务见 [plan3.md](plan3.md)。
+第三天已完成 `internal/tool` 的固定注册表、三个工具定义、严格参数解码和统一成功/失败结果，以及三个具体工具。`file_read` 可读取未变更关联 Go 文件，默认 120 行、最多 200 行/16 KiB 带行号正文，返回实际范围和截断标记；与 Load 共享静态筛选规则。`code_comment` 校验当前文件、head 行范围和新增起点，将合法问题按精确去重规则收集；`task_done` 返回单文件完成声明，允许零问题，不改变 collector。真实临时 Git 仓库测试验证固定 head，工具测试验证评论及完成信号隔离。CLI 尚未接入工具，Runner 的同轮执行与完成判断仍未实现。契约与进度见 [第三天记录](notes/day3-design.md)，后续任务见 [plan3.md](plan3.md)。
+
+`TestToolsOfflineDemo` 通过真实 `Resolve → Load` 绑定三个工具，独立执行 `file_read → code_comment → 重复 code_comment → task_done`，并插入失败调用验证 collector 无副作用。演示读取固定 head 中的当前文件和未变更关联文件，检查真实行号、AddedLines、重复标记及单文件完成声明；工具调用前后的 status/cached diff 保持一致。它直接调用注册表，不使用模型或 Mock Client，不代表 CLI/Agent 工具闭环或可恢复 Runner 已实现。
 
 `--mock`、`--output`、`--trace` 当前只保存参数；真实模型接入前不需要配置 API Key。
 
@@ -54,16 +56,23 @@ $LASTEXITCODE
 项目目前没有 Makefile，使用自身 Go 工具链检查，不调用参考项目的 Makefile。
 
 ```powershell
+$env:GOTOOLCHAIN = 'local'
+$env:GOPROXY = 'off'
+$env:GOSUMDB = 'off'
 gofmt -w .\cmd .\internal
 go test ./...
 go build ./...
 
+# 独立工具离线演示：英文日志输出固定 SHA、结果、duplicate、数量和声明
+go test ./internal/tool -run '^TestToolsOfflineDemo$' -v
+
 # 从临时仓库的两个真实提交加载并显示带行号 diff
 go test ./internal/gitdiff -run '^TestLoadDisplaysNumberedDiff$' -v
+git diff --check
 ```
 
 测试覆盖第一天的参数、help、退出码与消息契约，以及第二天的固定 SHA、仓库子目录、无效 ref、取消、普通修改、新增、空格路径、重命名按删除/新增处理、筛选原因和多 hunk 行号映射。大小边界覆盖 8/9 文件、400/401 新增加删除行、32 KiB patch 和 256 KiB head 内容。
 
 演示测试打印文件路径、base/head SHA、`+ head:N` / `- base:N` / 上下文行号和排序后的 `AddedLines: [4 5]`，并将行号逐项与提交内容核对。测试仓库通过 `t.TempDir()` 创建，隔离全局/系统 Git 配置、关闭自动换行转换和 hooks；符号链接通过索引对象构造，不要求 Windows 链接权限。测试同时验证读取不会改变临时仓库的工作区或索引。
 
-设计笔记、验证结果和后续任务见 [第一天记录](notes/day1-design.md) 和 [第二天记录](notes/day2-design.md)。源码按学习偏好保留已有中文注释，新增标识符和诊断使用英文；Go 源码保持 LF 换行。
+设计笔记、验证结果和后续任务见 [第一天记录](notes/day1-design.md)、[第二天记录](notes/day2-design.md) 和 [第三天记录](notes/day3-design.md)。源码按学习偏好保留已有中文注释，新增标识符和诊断使用英文；Go 源码保持 LF 换行。

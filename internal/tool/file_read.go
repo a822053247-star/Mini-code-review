@@ -63,7 +63,7 @@ func SplitSourceLines(content []byte) []string {
 	return lines
 }
 
-// Execute 可直接绑定到 Handlers.FileRead；它不需要 patch 或 AddedLines。
+// 返回 FileReadData，包含文件内容、总行数、开始行号、结束行号、是否截断、是否最后一行截断。
 func (reader *FileReader) Execute(ctx context.Context, args FileReadArgs) (Execution, error) {
 	if err := ctx.Err(); err != nil {
 		return Execution{}, fmt.Errorf("file_read: %w", err)
