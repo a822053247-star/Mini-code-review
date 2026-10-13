@@ -27,8 +27,7 @@ type MockClient struct {
 
 var _ Client = (*MockClient)(nil)
 
-// NewMockClient copies the script, including raw arguments and usage pointers.
-// Invalid tool arguments are retained for downstream validation tests.
+// 作用：创建一个模拟的LLM客户端，用于测试和验证LLM模型的响应。
 func NewMockClient(steps []MockStep) *MockClient {
 	client := &MockClient{steps: slices.Clone(steps)}
 	for i := range client.steps {
@@ -39,6 +38,7 @@ func NewMockClient(steps []MockStep) *MockClient {
 
 // Complete records each active request, including errors and script exhaustion.
 // A canceled context does not record the request or consume a script step.
+// 作用：完成一个请求，返回模拟的响应或错误。
 func (client *MockClient) Complete(ctx context.Context, request Request) (Response, error) {
 	if err := ctx.Err(); err != nil {
 		return Response{}, fmt.Errorf("mock complete: %w", err)

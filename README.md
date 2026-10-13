@@ -2,13 +2,15 @@
 
 用 Go 编写的个人 Agent 练习项目。需求与开发计划见 [需求文档](mini-code-review-agent-requirements.md)、[plan1.md](plan1.md) 和 [plan2.md](plan2.md)。
 
-## 当前进度：第三天工具层（步骤 1～6）
+## 当前进度：第四天 Mock、Runner 与串行调度（步骤 1～3）
 
 已完成独立 Go 模块、审查结果结构、模型客户端与消息契约、CLI 参数解析，以及 `internal/gitdiff` 的固定提交解析、逐文件 patch、head 内容读取、行号映射、筛选和范围限制。
 
 Git 输入层已能在测试中通过 `Resolve → Load` 运行，返回含所有变更文件、审查标记、跳过原因和覆盖警告的 `ChangeSet`。CLI 尚未接入该流程，仍然只解析和校验参数；CLI 的完整审查、工具执行、模型调用、报告和 trace 尚未实现。
 
-第三天已完成 `internal/tool` 的固定注册表、三个工具定义、严格参数解码和统一成功/失败结果，以及三个具体工具。`file_read` 可读取未变更关联 Go 文件，默认 120 行、最多 200 行/16 KiB 带行号正文，返回实际范围和截断标记；与 Load 共享静态筛选规则。`code_comment` 校验当前文件、head 行范围和新增起点，将合法问题按精确去重规则收集；`task_done` 返回单文件完成声明，允许零问题，不改变 collector。真实临时 Git 仓库测试验证固定 head，工具测试验证评论及完成信号隔离。CLI 尚未接入工具，Runner 的同轮执行与完成判断仍未实现。契约与进度见 [第三天记录](notes/day3-design.md)，后续任务见 [plan3.md](plan3.md)。
+第三天已完成 `internal/tool` 的固定注册表、三个工具定义、严格参数解码和统一成功/失败结果，以及三个具体工具。`file_read` 可读取未变更关联 Go 文件，默认 120 行、最多 200 行/16 KiB 带行号正文，返回实际范围和截断标记；与 Load 共享静态筛选规则。`code_comment` 校验当前文件、head 行范围和新增起点，将合法问题按精确去重规则收集；`task_done` 返回单文件完成声明，允许零问题，不改变 collector。真实临时 Git 仓库测试验证固定 head，工具测试验证评论及完成信号隔离。契约与进度见 [第三天记录](notes/day3-design.md)。
+
+第四天已实现脚本 Mock、独立 system/user 初始上下文、单文件 Runner 和最小串行 Agent。离线单测用真实注册表和内存读取依赖验证多轮消息回填、同轮完成、错误恢复、停止条件及 64 KiB 边界。调度接收已加载 ChangeSet，按路径运行独立文件任务，共享本次 collector；局部失败继续，全局取消停止，保留静态跳过、warnings、覆盖缺口和用量。真实 Git + Runner 正式演示、真实模型、最终 Report 状态汇总和 CLI 工具闭环尚未实现。实现记录见 [第四天记录](notes/day4-design.md)，后续任务见 [plan4.md](plan4.md)。
 
 `TestToolsOfflineDemo` 通过真实 `Resolve → Load` 绑定三个工具，独立执行 `file_read → code_comment → 重复 code_comment → task_done`，并插入失败调用验证 collector 无副作用。演示读取固定 head 中的当前文件和未变更关联文件，检查真实行号、AddedLines、重复标记及单文件完成声明；工具调用前后的 status/cached diff 保持一致。它直接调用注册表，不使用模型或 Mock Client，不代表 CLI/Agent 工具闭环或可恢复 Runner 已实现。
 
