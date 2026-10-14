@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 )
@@ -17,11 +18,12 @@ func TestRunExitCodes(t *testing.T) {
 	}{
 		{"help", []string{"--help"}, 0, "Usage of mini-review"},
 		{"invalid arguments", []string{"--format=text"}, 2, "--format"},
-		{"valid arguments", []string{"--mock", "--format=json"}, 1, "Review execution is not implemented yet."},
+		{"runtime repository failure", []string{"--repo", t.TempDir(), "--mock", "--format=json"}, 1, "Review stopped"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var diagnostics bytes.Buffer
-			if code := run(tc.args, &diagnostics); code != tc.code {
+			var output bytes.Buffer
+			if code := runCommand(context.Background(), tc.args, &output, &diagnostics, nil); code != tc.code {
 				t.Fatalf("exit code = %d, want %d", code, tc.code)
 			}
 			if !strings.Contains(diagnostics.String(), tc.text) {

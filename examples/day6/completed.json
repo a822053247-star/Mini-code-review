@@ -1,0 +1,51 @@
+{
+  "status": "completed",
+  "base_sha": "5f45aa0273ccccfff797d541969bc287ad47b5a6",
+  "head_sha": "0687c8cc59fdee93eaa65939139bc934ef241f42",
+  "files": [
+    {
+      "path": "a.go",
+      "status": "completed",
+      "stop_reason": "task_done",
+      "rounds": 3
+    },
+    {
+      "path": "z.go",
+      "status": "completed",
+      "stop_reason": "task_done",
+      "rounds": 3
+    }
+  ],
+  "findings": [
+    {
+      "path": "a.go",
+      "start_line": 2,
+      "end_line": 2,
+      "severity": "low",
+      "category": "bug",
+      "title": "Mock protocol example",
+      "description": "This scripted finding demonstrates collection and anchoring; it is not a code-review conclusion.",
+      "suggestion": "Inspect the code independently; no actual defect is asserted by this mock."
+    },
+    {
+      "path": "z.go",
+      "start_line": 2,
+      "end_line": 2,
+      "severity": "low",
+      "category": "bug",
+      "title": "Mock protocol example",
+      "description": "This scripted finding demonstrates collection and anchoring; it is not a code-review conclusion.",
+      "suggestion": "Inspect the code independently; no actual defect is asserted by this mock."
+    }
+  ],
+  "warnings": [
+    "Offline mock demonstration: findings are scripted protocol examples, not model conclusions."
+  ],
+  "usage": {
+    "llm_requests": 6,
+    "tool_calls": 6,
+    "input_tokens": null,
+    "output_tokens": null
+  },
+  "duration_ms": 903
+}

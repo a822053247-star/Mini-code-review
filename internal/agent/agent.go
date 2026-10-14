@@ -10,11 +10,13 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"time"
 
 	"example.com/mini-code-review/internal/gitdiff"
 	"example.com/mini-code-review/internal/llm"
 	"example.com/mini-code-review/internal/model"
 	"example.com/mini-code-review/internal/tool"
+	"example.com/mini-code-review/internal/trace"
 )
 
 // 作用：标记从start索引开始的所有文件为取消状态，并记录取消原因
@@ -47,7 +49,7 @@ func NewAgent(client llm.Client, options RunnerOptions, read tool.HeadFileReader
 	return &Agent{client: client, options: options, read: read}, nil
 }
 
-// 作用：运行一个ChangeSet
+// 作用：Run 方法用于运行一个ChangeSet，包括加载文件、创建任务、调用Runner执行任务、收集结果等
 func (agent *Agent) Run(ctx context.Context, set gitdiff.ChangeSet, background string) (ReviewResult, error) {
 	result := ReviewResult{
 		Snapshot: set.Snapshot, Files: []model.FileResult{}, Findings: []model.Finding{},
@@ -83,7 +85,18 @@ func (agent *Agent) Run(ctx context.Context, set gitdiff.ChangeSet, background s
 			result.Findings = collector.Findings()
 			return result, fmt.Errorf("review files: %w", parentErr)
 		}
+		fileStart := time.Now()
+		if err := recordEvent(agent.options.Events, trace.Event{Event: "file_start", File: change.Path}); err != nil {
+			markStoppedFiles(&result, set.Files, i, err, "trace_error")
+			result.Findings = collector.Findings()
+			return result, err
+		}
 		if !change.Reviewable {
+			if err := recordEvent(agent.options.Events, trace.Event{Event: "file_end", File: change.Path, Status: "skipped", StopReason: change.SkipReason, DurationMS: trace.Duration(fileStart)}); err != nil {
+				markStoppedFiles(&result, set.Files, i+1, err, "trace_error")
+				result.Findings = collector.Findings()
+				return result, err
+			}
 			continue
 		}
 		file, usage, err := agent.runFile(ctx, set, change, background, collector)
@@ -96,6 +109,16 @@ func (agent *Agent) Run(ctx context.Context, set gitdiff.ChangeSet, background s
 		}
 		if file.Status != model.FileCompleted {
 			result.HasCoverageGap = true
+		}
+		if traceErr := recordEvent(agent.options.Events, trace.Event{Event: "file_end", File: change.Path, Round: file.Rounds, Status: string(file.Status), StopReason: file.StopReason, DurationMS: trace.Duration(fileStart)}); traceErr != nil {
+			err = traceErr
+		}
+		if trace.IsError(err) {
+			result.Files[i].Status, result.Files[i].StopReason = model.FileFailed, "trace_error"
+			result.FileErrors[change.Path], result.HasCoverageGap = err, true
+			markStoppedFiles(&result, set.Files, i+1, err, "trace_error")
+			result.Findings = collector.Findings()
+			return result, err
 		}
 		if parentErr := ctx.Err(); parentErr != nil {
 			result.Files[i].Status, result.Files[i].StopReason = model.FileFailed, "canceled"
@@ -142,9 +165,13 @@ func (agent *Agent) runFile(ctx context.Context, set gitdiff.ChangeSet, change g
 }
 
 func markCanceledFiles(result *ReviewResult, changes []gitdiff.FileChange, start int, cause error) {
+	markStoppedFiles(result, changes, start, cause, "canceled")
+}
+
+func markStoppedFiles(result *ReviewResult, changes []gitdiff.FileChange, start int, cause error, reason string) {
 	for i := start; i < len(changes); i++ {
 		if changes[i].Reviewable {
-			result.Files[i].Status, result.Files[i].StopReason = model.FileFailed, "canceled"
+			result.Files[i].Status, result.Files[i].StopReason = model.FileFailed, reason
 			result.FileErrors[changes[i].Path] = cause
 			result.HasCoverageGap = true
 		}

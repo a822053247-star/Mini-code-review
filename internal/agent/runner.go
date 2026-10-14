@@ -16,12 +16,14 @@ import (
 	"example.com/mini-code-review/internal/llm"
 	"example.com/mini-code-review/internal/model"
 	"example.com/mini-code-review/internal/tool"
+	"example.com/mini-code-review/internal/trace"
 )
 
 type RunnerOptions struct {
 	MaxRounds       int
 	MaxContextBytes int
 	RequestTimeout  time.Duration
+	Events          trace.Sink
 }
 
 type Runner struct {
@@ -96,6 +98,10 @@ func (runner *Runner) Run(ctx context.Context, path string, initial []llm.Messag
 		if !withinContextBudget(history, runner.options.MaxContextBytes) {
 			return stop("context_limit", nil)
 		}
+		requestStart := time.Now()
+		if err := recordEvent(runner.options.Events, trace.Event{Event: "llm_start", File: path, Round: result.Rounds + 1}); err != nil {
+			return stop("trace_error", err)
+		}
 		requestCtx, cancel := context.WithTimeout(ctx, runner.options.RequestTimeout)
 		result.Rounds++
 		usage.LLMRequests++
@@ -103,6 +109,32 @@ func (runner *Runner) Run(ctx context.Context, path string, initial []llm.Messag
 		requestErr := requestCtx.Err()
 		cancel()
 		accumulateUsage(&usage, response.Usage)
+		requestCode := ""
+		if ctx.Err() != nil {
+			requestCode = "canceled"
+		} else if requestErr != nil || errors.Is(err, context.DeadlineExceeded) {
+			requestCode = "request_timeout"
+		} else if err != nil {
+			requestCode = "model_error"
+		} else if !validAssistant(response.Assistant) {
+			requestCode = "invalid_response"
+		}
+		requestStatus := "ok"
+		requestTraceCode, httpStatus := requestCode, 0
+		var httpFailure *llm.HTTPError
+		if requestCode == "model_error" && errors.As(err, &httpFailure) {
+			httpStatus = httpFailure.StatusCode
+			switch httpFailure.Code {
+			case "bad_request", "authentication_failed", "permission_denied", "model_or_endpoint_not_found", "rate_limited", "service_error", "http_error", "transport_error", "invalid_response", "response_incomplete", "response_too_large", "response_read_failed", "invalid_request", "invalid_tool_schema":
+				requestTraceCode = httpFailure.Code
+			}
+		}
+		if requestCode != "" {
+			requestStatus = "error"
+		}
+		if traceErr := recordEvent(runner.options.Events, trace.Event{Event: "llm_end", File: path, Round: result.Rounds, DurationMS: trace.Duration(requestStart), Status: requestStatus, Code: requestTraceCode, HTTPStatus: httpStatus, Usage: response.Usage}); traceErr != nil {
+			return stop("trace_error", traceErr)
+		}
 		if err != nil || requestErr != nil {
 			if parentErr := ctx.Err(); parentErr != nil {
 				return stop("canceled", fmt.Errorf("request model: %w", parentErr))
@@ -134,9 +166,34 @@ func (runner *Runner) Run(ctx context.Context, path string, initial []llm.Messag
 				if err := ctx.Err(); err != nil {
 					return stop("canceled", fmt.Errorf("execute tools: %w", err))
 				}
+				toolStart := time.Now()
+				toolName := call.Name
+				if toolName != tool.FileRead && toolName != tool.CodeComment && toolName != tool.TaskDone {
+					toolName = "unregistered"
+				}
+				if err := recordEvent(runner.options.Events, trace.Event{Event: "tool_start", File: path, Round: result.Rounds, Tool: toolName, ToolCallID: call.ID}); err != nil {
+					return stop("trace_error", err)
+				}
 				usage.ToolCalls++
 				// 调用 runner.registry.Execute 执行工具调用。
 				execution, err := runner.registry.Execute(ctx, call)
+				if call.Name == tool.TaskDone && execution.OK && (execution.Completion == nil || execution.Completion.Path != path) {
+					execution = tool.Failure("invalid_completion", "completion must declare the current file")
+				}
+				toolCode, toolStatus := "", "ok"
+				if err != nil {
+					toolStatus, toolCode = "error", "tool_error"
+					if ctx.Err() != nil {
+						toolCode = "canceled"
+					} else if errors.Is(err, context.DeadlineExceeded) {
+						toolCode = "tool_timeout"
+					}
+				} else if !execution.OK {
+					toolStatus, toolCode = "error", execution.Error.Code
+				}
+				if traceErr := recordEvent(runner.options.Events, trace.Event{Event: "tool_end", File: path, Round: result.Rounds, Tool: toolName, ToolCallID: call.ID, DurationMS: trace.Duration(toolStart), Status: toolStatus, Code: toolCode}); traceErr != nil {
+					return stop("trace_error", traceErr)
+				}
 				if err != nil {
 					if parentErr := ctx.Err(); parentErr != nil {
 						return stop("canceled", fmt.Errorf("execute tool: %w", parentErr))
@@ -145,9 +202,6 @@ func (runner *Runner) Run(ctx context.Context, path string, initial []llm.Messag
 						return stop("tool_timeout", fmt.Errorf("execute tool: %w", err))
 					}
 					return stop("tool_error", fmt.Errorf("execute tool: %w", err))
-				}
-				if call.Name == tool.TaskDone && execution.OK && (execution.Completion == nil || execution.Completion.Path != path) {
-					execution = tool.Failure("invalid_completion", "completion must declare the current file")
 				}
 				encoded, err := json.Marshal(execution.Result)
 				if err != nil {
@@ -183,6 +237,21 @@ func (runner *Runner) Run(ctx context.Context, path string, initial []llm.Messag
 			return stop("invalid_response", nil)
 		}
 	}
+}
+
+// 作用：recordEvent 函数用于记录代码审查任务的事件，包括工具调用、完成任务等。
+func recordEvent(sink trace.Sink, event trace.Event) error {
+	if sink == nil {
+		return nil
+	}
+	// 调用 trace.Sink 方法记录事件。
+	if err := sink(event); err != nil {
+		if trace.IsError(err) {
+			return err
+		}
+		return trace.Failed(err)
+	}
+	return nil
 }
 
 func validAssistant(message llm.Message) bool {
