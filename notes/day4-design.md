@@ -1,8 +1,8 @@
 # 第四天设计记录：Runner 契约与脚本 Mock
 
-日期：2026-10-12。对应 [plan4.md](../plan4.md) 步骤 1～3，依据 [需求文档](../mini-code-review-agent-requirements.md) 第 6、8、10～11 节。
+起始日期：2026-10-12，更新至 2026-10-13。对应 [plan4.md](../plan4.md) 步骤 1～4，依据 [需求文档](../mini-code-review-agent-requirements.md) 第 6、8、10～11 节。
 
-**状态：脚本 Mock、初始上下文、单文件 Runner、停止条件与最小串行调度已实现，并可通过离线单测执行。真实 Git + Runner 正式演示、最终报告状态汇总及 CLI 接入仍未实现。**
+**状态：脚本 Mock、初始上下文、单文件 Runner、停止条件、最小串行调度与真实 Git + Mock 正式离线演示已实现。最终报告状态汇总、真实模型及 CLI 接入仍未实现。实际命令结果在各步骤末尾记录。**
 
 ## 已阅读与复用的契约
 
@@ -201,4 +201,59 @@ LLMRequests/Rounds 计实际发起的请求，包括失败；ToolCalls 计实际
 
 本步没有网络请求、Key 配置、Git 写操作或参考代码修改，未修改 CLI/现有工具接口；前三天及 Mock/Runner 历史测试未回归。README 已更新串行调度进度；正式真实 Git + Mock 演示仍待步骤 4。
 
-下一步为步骤 4 的真实 Git + Mock 演示与统一验收；本次不接 CLI、signal.NotifyContext、真实模型、renderer 或 JSONL。
+步骤 3 完成时的下一步为步骤 4；当时尚未接 CLI、signal.NotifyContext、真实模型、renderer 或 JSONL。
+
+## 步骤 4：真实 Git + Mock 正式离线演示
+
+2026-10-13 新增 `internal/agent/integration_test.go` 的 `TestRunnerOfflineDemo`，包含 success/recovery 两个子场景。仅在测试包内保留最小 Git/文件 fixture helper，不调用 gitdiff/tool 的未导出 helper，不新增生产仓库管理器或其他接口。
+
+`t.TempDir()` 仓库恰好两个提交：sample.go 从减法改为含注释的加法，related.go 保持不变。隔离全局/系统配置及系统 attributes，清零环境注入的 Git 配置数量，空模板、局部身份、关闭签名/autocrlf/hooks，Git 命令输出使用英文 locale。fixture 不需要链接；已有链接验证仍由第三天索引对象 fixture 完成，不依赖 Windows 链接权限。
+
+真实 Resolve 固定 base/head 后，将 sample.go 暂存为 `package staged`，工作区再改为 `package unstaged`，删除工作区 related.go。随后真实 Load 仍得到唯一 Reviewable 的 sample.go，完整 head 内容正确、AddedLines 为 {4, 5}。生产 NewAgent 的 read 参数为 nil，实际工具通过 Git 对象读取 head，没有内存读取替代函数。
+
+初始 system/user 消息与已加载任务一致：固定 SHA、完整变更路径列表、编号 patch、排序后新增行和业务背景。每次后续 Mock.Requests 中的消息，都必须完整保留此前历史，先追加同轮 assistant 原始参数，再逐项追加对应 RoleTool JSON，原调用 ID 与顺序一致；三份真实工具定义在请求间保持一致。
+
+| 场景 | 模型响应与工具轨迹 | 验证结果要求 |
+| --- | --- | --- |
+| success | 第 1 轮读取 related.go 和 sample.go；第 2 轮评论第 5～6 行并重复提交；第 3 轮 task_done | 3 次请求、5 次工具调用，一条 Finding，文件 completed/task_done |
+| recovery | 第 1 轮 task_done 在前，随后第 3 行非法锚点评论、两个读取、合法评论及重复评论；第 2 轮纠正为第 5 行并重新 task_done | 首轮 invalid_anchor 真正回填，合法完成声明不能结束该轮；下一轮重试去重，一条 Finding，2 次请求、8 次工具调用，completed/task_done |
+
+两个读取分别核对固定 head SHA、路径、完整带行号内容、总行数、实际范围及截断标记。关联文件在工作区已删除；当前文件在暂存区和工作区都有不同内容，但仍读到 head 第 5 行的 `return a + b`。合法评论起点为新增第 5 行，终点为上下文第 6 行；失败评论不进入结果，重复保留首条 Finding。
+
+英文 t.Logf 输出比较 SHA、轮次、工具名/ID、成功/错误 JSON、失败 code 和 duplicate，最终输出实际 Findings 数量、文件状态、stop_reason 与请求/调用数量。最后一轮完成后没有额外模型请求，因此最后工具回填无法通过“下一轮 Request”观察；日志明确用实际 FileResult 记录 final_batch_completed，不伪造最终工具 JSON，也不为展示增加隐藏轮次。此处验证文件完成，不生成最终报告或 trace。
+
+每个场景完成后，status 与 cached diff 按原始输出逐字比较，必须与 Load/工具执行前一致。脚本独立创建 Mock 与 Agent.Run，两个场景各有新 collector 和消息历史。失败恢复只表示当前运行后续轮次纠正，未实现跨进程会话恢复。
+
+前三步已有单测继续负责两轮纯文本/全失败、零问题、同轮多调用、轮次/字节/超时/取消和串行调度隔离；本次集成测试专注真实装配与 Git 固定版本，不重复全部工具边界。README 已区分独立工具调用、Mock 驱动闭环和未完成的 CLI/真实模型审查。
+
+### 步骤 4 实际验证（2026-10-13）
+
+本项目 Go 1.26.7 windows/amd64；所有 Go 命令设置 GOTOOLCHAIN=local、GOPROXY=off、GOSUMDB=off。实施与文档说明完成后才运行以下命令，并按实际输出记录：
+
+| 实际命令/检查 | 结果 |
+| --- | --- |
+| `gofmt -w ./internal/agent ./internal/llm` | 完成，后续 gofmt -l 无输出 |
+| `go test ./...` | 全部 7 包通过；agent 3.568 秒，其余为缓存结果 |
+| `go build ./...` | 通过 |
+| `go test ./internal/agent -run '^TestRunnerOfflineDemo$' -v` | success/recovery 均通过；测试 2.55 秒，包 3.207 秒；两场景均 collector_count=1、completed/task_done |
+| `go test ./internal/tool -run '^TestToolsOfflineDemo$' -v` | 通过；测试 2.69 秒，包 3.402 秒 |
+| `go test ./internal/gitdiff -run '^TestLoadDisplaysNumberedDiff$' -v` | 通过；测试 1.98 秒，包 2.522 秒，AddedLines 为 [4 5] |
+| `go test ./cmd/mini-review -run '^TestRunExitCodes$' -v` | help、invalid_arguments、valid_arguments 子测试通过，包 0.553 秒 |
+| 编译到临时 exe 后实际执行 CLI | `--help`/`--format=text`/`--mock --format=json` 退出码为 0/2/1；stdout 均为空，stderr 均含预期帮助或诊断；临时 exe 已删除 |
+| `git diff --check`、agent/llm Go 源码 SPDX/LF | 通过；新 integration_test.go 含 Apache-2.0 SPDX 头并保持 LF |
+
+正式演示本次运行的 base SHA 为 `683522e34794490c2e8bae17c687a358f778da98`，head SHA 为 `535ba0a3431a5c8d367c59eb75b3276e0102ddae`；fixture 提交时间会改变 SHA，这些值仅记录本次执行。英文日志实际显示 invalid_anchor、completion_accepted=false、duplicate=true 和随后 renewed_done 完成，两个场景均 worktree_and_index_unchanged=true。
+
+没有网络请求、API Key 配置、参考项目修改或项目索引写操作。所有验证中的 Git 写操作只发生在临时 fixture 仓库；本步没有修改生产 Agent/Runner、客户端或 CLI 功能，没有生成报告和 trace。
+
+### 第四天交付验收
+
+- [x] Mock 实现现有 Client，脚本可控，坏 JSON 参数原样保留，无网络依赖。
+- [x] 初始上下文含固定 SHA、完整路径列表、当前编号 patch 和新增锚点，任务间历史独立。
+- [x] assistant 原始调用先保存，每个普通工具结果使用对应 ToolCallID 回填。
+- [x] 同轮调用全部处理后判断完成，有错误不能完成，后续轮次可以修正。
+- [x] 无效响应、轮次、64 KiB、请求超时及全局取消均可有限停止，保留已验证问题。
+- [x] 文件按路径串行，局部失败继续，全局取消停止，无适用文件不请求模型。
+- [x] 真实 Git + Mock 离线演示、回归、构建与文档记录完成，CLI 接入和真实模型未被提前宣称完成。
+
+未完成的真实适配器、最终 Report 汇总、renderer、trace、CLI 与 Ctrl+C 信号入口保持明确标注。第五天在现有 Client 接口上接真实适配器并完善 prompt；第六天完成报告/事件/CLI；第七天进行端到端样例验收，后续不提前开展 P1。

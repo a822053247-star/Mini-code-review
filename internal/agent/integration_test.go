@@ -116,6 +116,7 @@ func TestRunnerOfflineDemo(t *testing.T) {
 		return llm.MockStep{Response: llm.Response{Assistant: llm.Message{Role: llm.RoleAssistant, ToolCalls: calls}}}
 	}
 	readRelated := call("read_related", tool.FileRead, tool.FileReadArgs{Path: "related.go"})
+	readCurrent := call("read_current", tool.FileRead, tool.FileReadArgs{Path: "sample.go"})
 	accepted := call("accepted", tool.CodeComment, finding)
 	duplicate := call("duplicate", tool.CodeComment, finding)
 	done := call("done", tool.TaskDone, tool.TaskDoneArgs{Summary: "Checked arithmetic and related context."})
@@ -124,10 +125,10 @@ func TestRunnerOfflineDemo(t *testing.T) {
 		steps []llm.MockStep
 		codes map[string]string
 	}{
-		{"success", []llm.MockStep{step(readRelated), step(accepted, duplicate), step(done)}, nil},
+		{"success", []llm.MockStep{step(readRelated, readCurrent), step(accepted, duplicate), step(done)}, nil},
 		{"recovery", []llm.MockStep{
 			step(call("rejected_done", tool.TaskDone, tool.TaskDoneArgs{Summary: "Checked current file."}),
-				call("bad_anchor", tool.CodeComment, badAnchor), readRelated, accepted, duplicate),
+				call("bad_anchor", tool.CodeComment, badAnchor), readRelated, readCurrent, accepted, duplicate),
 			step(call("corrected_anchor", tool.CodeComment, finding), call("renewed_done", tool.TaskDone, tool.TaskDoneArgs{Summary: "Corrected the anchor and rechecked the current file."})),
 		}, map[string]string{"bad_anchor": "invalid_anchor"}},
 	} {
@@ -184,19 +185,30 @@ func TestRunnerOfflineDemo(t *testing.T) {
 						if executed.ID == "duplicate" && (!duplicateFlag || data["accepted"] != true) {
 							t.Fatal("duplicate submission did not return a successful duplicate result")
 						}
+						if executed.ID == "accepted" && (duplicateFlag || data["accepted"] != true) {
+							t.Fatal("first valid finding was not accepted as a new submission")
+						}
+						if executed.Name == tool.TaskDone && (data["done_requested"] != true || data["path"] != "sample.go") {
+							t.Fatal("completion result lost its current-file binding")
+						}
 					}
 					if executed.Name == tool.FileRead {
-						var envelope struct { Data tool.FileReadData `json:"data"` }
+						var envelope struct {
+							Data tool.FileReadData `json:"data"`
+						}
 						if err := json.Unmarshal([]byte(message.Content), &envelope); err != nil {
 							t.Fatal(err)
 						}
 						data := envelope.Data
-						if data.Path != "related.go" || data.HeadSHA != head || data.Content != "1|package sample\n2|\n3|const MaxInput = 100\n" || data.TotalLines != 3 ||
-							data.StartLine == nil || *data.StartLine != 1 || data.EndLine == nil || *data.EndLine != 3 || data.Truncated || data.LastLineTruncated {
-							t.Fatalf("read followed worktree or lost actual head line numbers: %+v", data)
+						wantPath, wantLines := "related.go", 3
+						wantContent := "1|package sample\n2|\n3|const MaxInput = 100\n"
+						if executed.ID == "read_current" {
+							wantPath, wantLines = "sample.go", 6
+							wantContent = "1|package sample\n2|\n3|func Sum(a, b int) int {\n4|\t// Add both inputs.\n5|\treturn a + b\n6|}\n"
 						}
-						if strings.ReplaceAll(strings.TrimSuffix(data.Content, "\n"), "\n", "") == relatedContent {
-							t.Fatal("numbered read unexpectedly lost its line prefixes")
+						if data.Path != wantPath || data.HeadSHA != head || data.Content != wantContent || data.TotalLines != wantLines ||
+							data.StartLine == nil || *data.StartLine != 1 || data.EndLine == nil || *data.EndLine != wantLines || data.Truncated || data.LastLineTruncated {
+							t.Fatalf("read followed worktree or lost actual head line numbers: %+v", data)
 						}
 					}
 					if executed.ID == "rejected_done" {
