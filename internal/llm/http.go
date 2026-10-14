@@ -21,7 +21,7 @@ import (
 const maxHTTPBodyBytes = 1024 * 1024
 
 // HTTPConfig configures the single SiliconFlow chat-completions protocol.
-// Endpoint is the full /chat/completions URL, not a base URL.
+// Endpoint 表示 SiliconFlow 模型的 API 端点 URL，例如 https://api.siliconflow.cn/v1/chat/completions
 type HTTPConfig struct {
 	Endpoint       string
 	Model          string
@@ -128,6 +128,7 @@ type wireTool struct {
 	Function wireFunction `json:"function"`
 }
 
+// 作用：Complete 方法用于向 SiliconFlow 模型发送请求，并返回模型的响应结果，包括助手消息和工具调用信息。
 func (client *HTTPClient) Complete(ctx context.Context, request Request) (Response, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, client.config.RequestTimeout)
 	defer cancel()
@@ -170,6 +171,7 @@ func (client *HTTPClient) Complete(ctx context.Context, request Request) (Respon
 	if err != nil {
 		return Response{}, &HTTPError{Code: "invalid_request"}
 	}
+	// 设置 HTTP 请求头，包括 Authorization、Content-Type 和 Accept。
 	httpRequest.Header.Set("Authorization", "Bearer "+client.config.APIKey)
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "application/json")
@@ -204,6 +206,7 @@ func (client *HTTPClient) Complete(ctx context.Context, request Request) (Respon
 		}
 		return Response{}, &HTTPError{Code: code, StatusCode: response.StatusCode}
 	}
+	// 读取模型响应体，限制最大大小为 max1024MB。
 	content, err := io.ReadAll(io.LimitReader(response.Body, maxHTTPBodyBytes+1))
 	if err != nil {
 		if cause := requestCtx.Err(); cause != nil {
@@ -217,6 +220,7 @@ func (client *HTTPClient) Complete(ctx context.Context, request Request) (Respon
 	if !utf8.Valid(content) {
 		return Response{}, &HTTPError{Code: "invalid_response"}
 	}
+	// 定义了一个结构体用于解析模型的 JSON 响应，包括消息、完成原因和使用的令牌信息。
 	var decoded struct {
 		Choices []struct {
 			Message      wireMessage `json:"message"`
